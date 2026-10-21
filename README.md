@@ -21,13 +21,20 @@ To check the numbers, open **Acceptance checks** on the page and click
 **Run checks**. With exports covering 1 June to 21 October 2026, all 15 should
 pass.
 
-## Routed customers
+## Headline
 
-The **Routed customers** section follows customers who started in one journey
-and landed as another product (Leased Lines to Broadband by default). It shows
-what they earned, Leased Lines RPE with and without them, and how much they add
-to Broadband's reported leads, revenue and RPE, with a table by period you can
-download. It follows the date range and filters like everything else.
+The top of the page has two parts. Both follow the date range and filters, and
+each has a table by period you can download.
+
+1. **Leased Lines into Broadband**: how many Leased Lines customers landed as
+   Broadband, what they earned, and Leased Lines RPE with and without them.
+2. **Broadband step by step**: Broadband as reported today, less the Leased
+   Lines customers routed in, its own leads split into broadband and
+   broadband-mobile, plus the energy cross sells from its customers, ending at
+   Broadband blended (the real figure). Each step shows its effect on RPE.
+
+Change the defaults under `headline` in the EDIT HERE section, and the friendly
+form type names under `formTypeLabels`.
 
 ## Changing settings
 

@@ -113,6 +113,8 @@ def test_html_engine_matches_python(tmp_path):
             else:
                 assert got["summary"][key] == pytest.approx(value), (case, key)
         check_routed(leads, case, s, e, got["routed"])
+        check_bridge(leads, case, s, e, got["bridge"], want)
+        assert got["bridgeRowsRevenue"] == pytest.approx(want["blended_revenue"])
         table = breakdown(leads, starts, case["channel"], s, e, case["gran"], ok)
         assert [r["label"] for r in got["table"]] == table["label"].tolist()
         assert [r["isPart"] for r in got["table"]] == table["is_part"].tolist()
@@ -144,3 +146,29 @@ def check_routed(leads, case, start, end, got):
         if others.empty and got["to_without_leads"]:
             flat = reported[reported["started_in"] == to]
             assert got["to_without_rpe"] == pytest.approx(flat["commission"].sum() / len(flat))
+
+
+def check_bridge(leads, case, start, end, got, summary):
+    """The channel step by step, worked out independently with pandas."""
+    ch = case["channel"]
+    period = in_range(leads, start, end)
+    landed = period[period["landed"] == ch]
+    own = landed[landed["started_in"] == ch]
+    assert got["reported_leads"] == summary["reported_leads"]
+    assert got["own_leads"] == summary["flattened_leads"]
+    assert got["own_revenue"] == pytest.approx(summary["flattened_revenue"])
+    assert got["blended_enquiries"] == summary["blended_enquiries"]
+    assert got["blended_revenue"] == pytest.approx(summary["blended_revenue"])
+    by_type = own.groupby("formType")["commission"].agg(["size", "sum"])
+    assert set(got["ownTypes"]) == set(by_type.index)
+    for t, row in by_type.iterrows():
+        assert got["ownTypes"][t]["leads"] == row["size"]
+        assert got["ownTypes"][t]["revenue"] == pytest.approx(row["sum"])
+    routed_in = landed[landed["started_in"] != ch].groupby("started_in").size().to_dict()
+    assert {k: v["leads"] for k, v in got["routedIn"].items()} == routed_in
+    started = period[period["started_in"] == ch]
+    out = started[started["landed"] != ch].groupby("landed")["commission"].agg(["size", "sum"])
+    assert {k: v["leads"] for k, v in got["out"].items()} == out["size"].to_dict()
+    # The steps add up: reported - routed in = own; own + out = blended.
+    assert got["reported_revenue"] - got["routed_in_revenue"] == pytest.approx(got["own_revenue"])
+    assert got["own_revenue"] + got["out_revenue"] == pytest.approx(got["blended_revenue"])

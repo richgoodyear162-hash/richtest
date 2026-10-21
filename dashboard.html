@@ -213,6 +213,12 @@ dl.defs dd { margin: 0; color: var(--text-2); }
 .routed .pick { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .routed .pick select { width: auto; }
 .routed .summary { margin: 10px 0 0; font-size: 14.5px; }
+.headline-title { margin: 18px 0 2px; font-size: 20px; }
+table.bridge td:first-child, table.bridge th:first-child { white-space: normal; min-width: 260px; }
+table.bridge tr.total td { font-weight: 700; background: var(--surface-2); }
+table.bridge tr.total td:first-child { background: var(--surface-2); }
+table.bridge tr.sub td:first-child { padding-left: 28px; color: var(--text-2); }
+table.bridge td.effect { color: var(--text-2); }
 code { background: var(--surface-2); padding: 0 4px; border-radius: 4px; font-size: 12.5px; }
 </style>
 </head>
@@ -300,6 +306,16 @@ const CONFIG = {
 
   // Campaign type from campaign_name. A blank campaign is "None".
   brandTerms: ["brand"],
+
+  // The headline at the top of the page: customers routed from one journey
+  // into a channel, then that channel step by step.
+  headline: { from: "Leased Lines", channel: "Broadband" },
+
+  // Friendlier names for form types in the headline.
+  formTypeLabels: {
+    "broadband": "Broadband only",
+    "broadband-mobile": "Broadband with mobile opt-in",
+  },
 
   // Event markers on the trend charts.
   events: [
@@ -887,6 +903,60 @@ const Engine = (() => {
     };
   }
 
+  // A channel step by step: as reported, less leads routed in from other
+  // journeys, its own leads by form type, plus what its customers earned
+  // elsewhere (such as cross sells), giving blended. A row per period plus a total.
+  function channelBridge(leads, channel, start, end, gran) {
+    const blank = () => ({
+      reported_leads: 0, reported_revenue: 0, own_leads: 0, own_revenue: 0,
+      blended_enquiries: 0, blended_revenue: 0, routedIn: {}, ownTypes: {}, out: {},
+    });
+    const bump = (group, key, l) => {
+      const e = group[key] || (group[key] = { leads: 0, enquiries: 0, revenue: 0 });
+      e.leads++;
+      if (!l.isAddon) e.enquiries++;
+      e.revenue += l.commission;
+    };
+    const periods = allPeriods(start, end, gran);
+    const byPeriod = new Map(periods.map((p) => [p, blank()]));
+    const total = blank();
+    for (const l of leads) {
+      if (l.day < start || l.day > end) continue;
+      const landed = l.landed === channel;
+      const started = l.startedIn === channel;
+      for (const acc of [byPeriod.get(periodStart(l.day, gran)), total]) {
+        if (landed) { acc.reported_leads++; acc.reported_revenue += l.commission; }
+        if (landed && !started) bump(acc.routedIn, l.startedIn, l);
+        if (landed && started) { acc.own_leads++; acc.own_revenue += l.commission; bump(acc.ownTypes, l.formType, l); }
+        if (started && !landed) bump(acc.out, l.landed, l);
+        if (started) { acc.blended_revenue += l.commission; if (!l.isAddon) acc.blended_enquiries++; }
+      }
+    }
+    const finish = (r) => {
+      r.reported_rpe = ratio(r.reported_revenue, r.reported_leads);
+      r.own_rpe = ratio(r.own_revenue, r.own_leads);
+      r.rpe = ratio(r.blended_revenue, r.blended_enquiries);
+      const diff = (a, b) => (a === null || b === null ? null : a - b);
+      r.routed_in_leads = Object.values(r.routedIn).reduce((s, e) => s + e.leads, 0);
+      r.routed_in_revenue = Object.values(r.routedIn).reduce((s, e) => s + e.revenue, 0);
+      r.routed_in_effect = diff(r.reported_rpe, r.own_rpe);
+      for (const e of Object.values(r.ownTypes)) {
+        e.rpe = ratio(e.revenue, e.leads);
+        e.share = ratio(e.leads, r.own_leads);
+        e.effect = diff(r.own_rpe, ratio(r.own_revenue - e.revenue, r.own_leads - e.leads));
+      }
+      for (const e of Object.values(r.out)) e.rpe = ratio(e.revenue, e.leads);
+      r.out_leads = Object.values(r.out).reduce((s, e) => s + e.leads, 0);
+      r.out_revenue = Object.values(r.out).reduce((s, e) => s + e.revenue, 0);
+      r.out_effect = diff(r.rpe, r.own_rpe);
+      return r;
+    };
+    return {
+      total: finish(total),
+      rows: periods.map((p) => ({ ...finish(byPeriod.get(p)), period: p, ...periodLabel(p, gran, start, end) })),
+    };
+  }
+
   function routingDetail(leads, channel, start, end) {
     const out = new Map(), inward = new Map();
     for (const l of leads) {
@@ -1000,7 +1070,7 @@ const Engine = (() => {
     loadFiles, dedupe, prepareRows, attributeLeads, formStarts, mappingHealth, build,
     applyFilters, startsAvailable, activeKeys,
     lastFullDay, comparisonRange, periodStart, periodLabel, allPeriods,
-    summarise, breakdown, rollingRpe, routingDetail, routedJourney, pctChange, ppChange, acceptanceChecks,
+    summarise, breakdown, rollingRpe, routingDetail, routedJourney, channelBridge, pctChange, ppChange, acceptanceChecks,
   };
 })();
 if (typeof module !== "undefined") module.exports = Engine;
@@ -1128,7 +1198,7 @@ if (typeof module !== "undefined") module.exports = Engine;
     files: [], model: null, filterOptions: {},
     start: null, end: null, gran: "Day", compare: "Previous period",
     channels: [...CONFIG.dashboardChannels], followOns: false,
-    routeFrom: "Leased Lines", routeTo: "Broadband",
+    routeFrom: CONFIG.headline.from, routeTo: CONFIG.headline.channel, bridgeChannel: CONFIG.headline.channel,
     selection: {}, openHealth: false, messages: [], filterSearch: {},
   };
   let channelOrder = [];
@@ -1449,7 +1519,7 @@ if (typeof module !== "undefined") module.exports = Engine;
       r.rows.map((row) => `<tr class="${row.isPart ? "part" : ""}"><td>${esc(row.label)}</td>${ROUTED_COLUMNS.map(([, k, f]) => `<td>${f(row[k])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
     return `<section class="card routed" id="routedPanel">
       <div class="card-head" style="justify-content:space-between;flex-wrap:wrap">
-        <h2>Routed customers</h2>
+        <h2>${esc(from)} into ${esc(to)}</h2>
         <div class="pick small"><span class="muted">Started in</span><select id="routeFrom">${opts(from, to)}</select>
           <span class="muted">landed as</span><select id="routeTo">${opts(to, from)}</select></div>
       </div>
@@ -1500,6 +1570,122 @@ if (typeof module !== "undefined") module.exports = Engine;
     a.download = name;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  const typeLabel = (t) => CONFIG.formTypeLabels?.[t] || t;
+  const ownEnquiries = (r) => Object.values(r.ownTypes).reduce((s, e) => s + e.enquiries, 0);
+
+  function outLabel(landed, e, ch) {
+    if (e.enquiries === 0) return `Plus ${landed} add-ons (such as cross sells) from ${ch} customers`;
+    if (e.enquiries === e.leads) return `Plus ${ch} enquiries that landed as ${landed}`;
+    return `Plus ${landed} leads from ${ch} customers`;
+  }
+
+  function bridgeColumns(t, ch) {
+    const cols = [
+      ["Reported leads", (r) => r.reported_leads, fmt.count],
+      ["Reported revenue", (r) => r.reported_revenue, fmt.money],
+      ["Reported RPE", (r) => r.reported_rpe, fmt.money],
+    ];
+    for (const src of Object.keys(t.routedIn)) {
+      cols.push([`Routed in from ${src} leads`, (r) => r.routedIn[src]?.leads ?? 0, fmt.count]);
+      cols.push([`Routed in from ${src} revenue`, (r) => r.routedIn[src]?.revenue ?? 0, fmt.money]);
+    }
+    cols.push([`${ch} own leads`, (r) => r.own_leads, fmt.count], [`${ch} own RPE`, (r) => r.own_rpe, fmt.money]);
+    for (const type of Object.keys(t.ownTypes)) {
+      cols.push([`${typeLabel(type)} leads`, (r) => r.ownTypes[type]?.leads ?? 0, fmt.count]);
+      cols.push([`${typeLabel(type)} RPE`, (r) => r.ownTypes[type]?.rpe ?? null, fmt.money]);
+    }
+    for (const landed of Object.keys(t.out)) {
+      cols.push([`${landed} leads from ${ch} customers`, (r) => r.out[landed]?.leads ?? 0, fmt.count]);
+      cols.push([`${landed} revenue from ${ch} customers`, (r) => r.out[landed]?.revenue ?? 0, fmt.money]);
+    }
+    cols.push(["Blended enquiries", (r) => r.blended_enquiries, fmt.count], ["Blended revenue", (r) => r.blended_revenue, fmt.money],
+      ["Blended RPE", (r) => r.rpe, fmt.money]);
+    return cols;
+  }
+
+  function bridgePanel(leads) {
+    const { start, end, gran } = state;
+    const ch = state.bridgeChannel;
+    const b = E.channelBridge(leads, ch, start, end, gran);
+    lastRender.bridge = b;
+    const t = b.total;
+    const diff = (a, c) => (a === null || c === null ? null : a - c);
+    const per = (revenue, count) => (count ? revenue / count : null);
+    const withoutRpe = (revenue, count) => diff(t.reported_rpe, per(revenue, count));
+    const ownEnq = ownEnquiries(t);
+    const row = (cls, label, leads, revenue, rpe, effect) =>
+      `<tr class="${cls}"><td>${label}</td><td>${leads}</td><td>${revenue}</td><td>${fmt.money(rpe)}</td><td class="effect">${effect ?? ""}</td></tr>`;
+    const rows = [];
+    rows.push(row("total", `${esc(ch)} as reported today`, fmt.count(t.reported_leads), fmt.money(t.reported_revenue), t.reported_rpe));
+    for (const [src, e] of Object.entries(t.routedIn)) {
+      const effect = withoutRpe(t.reported_revenue - e.revenue, t.reported_leads - e.leads);
+      rows.push(row("", `Less ${esc(src)} customers routed in`, "-" + fmt.count(e.leads), "-" + fmt.money(e.revenue), e.revenue / e.leads,
+        effect === null ? "" : `adds ${signedMoney(effect)} to reported RPE`));
+    }
+    rows.push(row("total", `${esc(ch)}'s own leads`, fmt.count(t.own_leads), fmt.money(t.own_revenue), t.own_rpe));
+    Object.entries(t.ownTypes).sort((a, c) => c[1].leads - a[1].leads).forEach(([type, e], i) => {
+      // The largest type is the base, so only the others get an effect.
+      rows.push(row("sub", `${esc(typeLabel(type))} <span class="muted small">(${esc(type)})</span>`,
+        `${fmt.count(e.leads)} <span class="muted small">${fmt.percent(e.share)}</span>`, fmt.money(e.revenue), e.rpe,
+        i === 0 || e.effect === null ? "" : `moves own RPE by ${signedMoney(e.effect)}`));
+    });
+    for (const [landed, e] of Object.entries(t.out)) {
+      const effect = diff(per(t.own_revenue + e.revenue, ownEnq + e.enquiries), per(t.own_revenue, ownEnq));
+      rows.push(row("", esc(outLabel(landed, e, ch)), "+" + fmt.count(e.leads), "+" + fmt.money(e.revenue), e.rpe,
+        effect === null ? "" : `adds ${signedMoney(effect)} to RPE`));
+    }
+    rows.push(row("total", `${esc(ch)} blended (the real figure)`, `${fmt.count(t.blended_enquiries)} enquiries`, fmt.money(t.blended_revenue), t.rpe,
+      diff(t.rpe, t.reported_rpe) === null ? "" : `${signedMoney(diff(t.rpe, t.reported_rpe))} against reported`));
+
+    const bits = [];
+    if (t.rpe !== null && t.reported_rpe !== null) bits.push(`${esc(ch)}'s real RPE is <strong>${fmt.money(t.rpe)}</strong> per enquiry, against ${fmt.money(t.reported_rpe)} reported.`);
+    for (const [src, e] of Object.entries(t.routedIn)) {
+      bits.push(`${esc(src)} customers routed in add ${fmt.count(e.leads)} leads (${fmt.money(e.revenue)}) it didn't generate.`);
+    }
+    const types = Object.entries(t.ownTypes);
+    if (types.length > 1) {
+      const [type, e] = types.sort((a, c) => a[1].leads - c[1].leads)[0];
+      bits.push(`${esc(typeLabel(type))} is ${fmt.percent(e.share)} of its own leads at ${fmt.money(e.rpe)} each${e.effect !== null ? `, which moves its RPE by ${signedMoney(e.effect)}` : ""}.`);
+    }
+    for (const [landed, e] of Object.entries(t.out)) {
+      bits.push(`${esc(landed)} leads from its customers are worth ${fmt.money(e.revenue)} and count towards ${esc(landed)} in today's reporting.`);
+    }
+
+    const cols = bridgeColumns(t, ch);
+    const periodTable = `<div class="tablewrap"><table><thead><tr><th>Period</th>${cols.map(([l]) => `<th>${esc(l)}</th>`).join("")}</tr></thead><tbody>${
+      b.rows.map((r) => `<tr class="${r.isPart ? "part" : ""}"><td>${esc(r.label)}</td>${cols.map(([, get, f]) => `<td>${f(get(r))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    const opts = channelOrder.filter((c) => c !== E.UNMAPPED).map((c) => `<option ${c === ch ? "selected" : ""}>${esc(c)}</option>`).join("");
+
+    return `<section class="card routed" id="bridgePanel">
+      <div class="card-head" style="justify-content:space-between;flex-wrap:wrap">
+        <h2><span class="swatch" style="background:${colourOf(ch)};margin-right:8px"></span>${esc(ch)} step by step</h2>
+        <div class="pick small"><span class="muted">Channel</span><select id="bridgeChannel">${opts}</select></div>
+      </div>
+      <p class="summary">${bits.join(" ")}</p>
+      <div class="tablewrap" style="margin-top:12px"><table class="bridge"><thead><tr><th>Step</th><th>Leads</th><th>Revenue</th><th>RPE</th><th>Effect on RPE</th></tr></thead>
+        <tbody>${rows.join("")}</tbody></table></div>
+      <details class="breakdown"><summary>By ${gran.toLowerCase()}</summary>${periodTable}
+        <div class="toolbar"><button class="btn small" id="exportBridge">Download this table (CSV)</button></div></details>
+    </section>`;
+  }
+
+  function exportBridge() {
+    const { bridge, start, end, gran } = lastRender;
+    const ch = state.bridgeChannel;
+    const cols = bridgeColumns(bridge.total, ch);
+    const q = (v) => { const s = String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const lines = [["Period", "Period start", "Part period", ...cols.map(([l]) => l)].map(q).join(",")];
+    for (const r of bridge.rows) {
+      lines.push([r.label, E.isoFromDay(r.period), r.isPart ? "Yes" : "No", ...cols.map(([, get]) => {
+        const v = get(r);
+        return v === null ? "" : Number.isInteger(v) ? v : v.toFixed(2);
+      })].map(q).join(","));
+    }
+    const filters = describeFilters();
+    if (filters) lines.push("", q(`Filtered: ${filters}`));
+    download(lines.join("\n"), `${ch}-step-by-step-${E.isoFromDay(start)}-to-${E.isoFromDay(end)}-${gran}.csv`.toLowerCase().replace(/\s+/g, "-"));
   }
 
   let lastRender = null;
@@ -1554,11 +1740,14 @@ if (typeof module !== "undefined") module.exports = Engine;
       <h1>Blended RPE</h1>
       <div class="subline">${sub.join(" · ")}</div>
       <div class="filterline">${filters ? `<b>Filtered:</b> ${esc(filters)}` : `<span class="muted">No filters applied</span>`}</div>
+      <h2 class="headline-title">Headline</h2>
+      ${routedPanel(leads)}
+      ${bridgePanel(leads)}
+      <h2 class="headline-title">By channel</h2>
       <details class="panel"><summary>What these figures mean</summary><div class="body"><dl class="defs">${
         DEFINITIONS.map(([t, d]) => `<dt>${t}</dt><dd>${d}</dd>`).join("")}</dl></div></details>
       ${healthPanel(m.health)}
       ${checksPanel()}
-      ${routedPanel(leads)}
       ${channels.length ? cards : `<div class="msg warn">Pick at least one channel on the left.</div>`}
       ${channels.length ? `<div class="toolbar"><button class="btn primary" id="exportBtn">Download breakdown (CSV)</button></div>
       <h2 style="margin-top:28px">Trend</h2>
@@ -1571,6 +1760,8 @@ if (typeof module !== "undefined") module.exports = Engine;
     $("#routeFrom").addEventListener("change", (e) => { state.routeFrom = e.target.value; renderMain(); });
     $("#routeTo").addEventListener("change", (e) => { state.routeTo = e.target.value; renderMain(); });
     $("#exportRouted").addEventListener("click", exportRouted);
+    $("#bridgeChannel").addEventListener("change", (e) => { state.bridgeChannel = e.target.value; renderMain(); });
+    $("#exportBridge").addEventListener("click", exportBridge);
     if (channels.length) {
       $("#exportBtn").addEventListener("click", exportCsv);
       drawCharts();
