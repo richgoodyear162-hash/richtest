@@ -202,14 +202,8 @@ dl.defs { display: grid; grid-template-columns: 150px 1fr; gap: 6px 14px; margin
 dl.defs dt { font-weight: 600; }
 dl.defs dd { margin: 0; color: var(--text-2); }
 @media (max-width: 600px) { dl.defs { grid-template-columns: 1fr; } dl.defs dd { margin-bottom: 6px; } }
-.routed .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
-@media (max-width: 900px) { .routed .pair { grid-template-columns: 1fr; } }
-.routed .side { background: var(--surface-2); border-radius: 10px; padding: 12px 14px; }
-.routed .side h4 { margin: 0 0 8px; font-size: 14px; display: flex; gap: 8px; align-items: center; }
-.routed .kv { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-top: 1px solid var(--border); font-variant-numeric: tabular-nums; }
-.routed .kv:first-of-type { border-top: 0; }
-.routed .kv span:first-child { color: var(--text-2); }
-.routed .kv.key span:last-child { font-weight: 700; }
+.route-select { width: auto; max-width: 100%; font-size: 17px; font-weight: 600; padding: 6px 10px; }
+table.rpe-compare td:first-child, table.rpe-compare th:first-child { min-width: 180px; }
 .routed .pick { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .routed .pick select { width: auto; }
 .routed .summary { margin: 10px 0 0; font-size: 14.5px; }
@@ -861,45 +855,48 @@ const Engine = (() => {
     return out;
   }
 
-  // Customers who started in one journey and landed as another product, and
-  // what that does to both channels. A row per period plus a total.
-  function routedJourney(leads, from, to, start, end, gran) {
-    const blank = () => ({
-      from_enquiries: 0, from_revenue: 0, kept_leads: 0, kept_revenue: 0,
-      routed_leads: 0, routed_enquiries: 0, routed_revenue: 0, to_reported_leads: 0, to_reported_revenue: 0,
-    });
-    const periods = allPeriods(start, end, gran);
-    const byPeriod = new Map(periods.map((p) => [p, blank()]));
-    const total = blank();
+  // Routes are leads that started in one journey and landed as another
+  // product. "routed" leads replace an enquiry in the journey they started in;
+  // cross sells and follow-ons are extra leads on top of it.
+  function routeKind(l) {
+    if (l.route === ROUTE.CROSS) return "cross";
+    if (l.route === ROUTE.FOLLOW) return "follow";
+    return "routed";
+  }
+
+  function routesInData(leads) {
+    const found = new Map();
     for (const l of leads) {
-      if (l.day < start || l.day > end) continue;
-      for (const acc of [byPeriod.get(periodStart(l.day, gran)), total]) {
-        if (l.startedIn === from) {
-          if (!l.isAddon) acc.from_enquiries++;
-          acc.from_revenue += l.commission;
-          if (l.landed === from) { acc.kept_leads++; acc.kept_revenue += l.commission; }
-          if (l.landed === to) { acc.routed_leads++; acc.routed_revenue += l.commission; if (!l.isAddon) acc.routed_enquiries++; }
-        }
-        if (l.landed === to) { acc.to_reported_leads++; acc.to_reported_revenue += l.commission; }
-      }
+      if (l.startedIn === l.landed) continue;
+      const kind = routeKind(l);
+      const key = `${l.startedIn}|${l.landed}|${kind}`;
+      const e = found.get(key) || { key, from: l.startedIn, to: l.landed, kind, leads: 0 };
+      e.leads++;
+      found.set(key, e);
     }
-    const finish = (r) => {
-      r.from_rpe = ratio(r.from_revenue, r.from_enquiries);
-      r.kept_rpe = ratio(r.kept_revenue, r.kept_leads);
-      r.routed_rpe = ratio(r.routed_revenue, r.routed_leads);
-      r.routed_share = ratio(r.routed_enquiries, r.from_enquiries);
-      r.to_reported_rpe = ratio(r.to_reported_revenue, r.to_reported_leads);
-      r.to_without_leads = r.to_reported_leads - r.routed_leads;
-      r.to_without_revenue = r.to_reported_revenue - r.routed_revenue;
-      r.to_without_rpe = ratio(r.to_without_revenue, r.to_without_leads);
-      r.lead_uplift = ratio(r.routed_leads, r.to_without_leads);
-      r.revenue_uplift = ratio(r.routed_revenue, r.to_without_revenue);
-      r.rpe_effect = r.to_reported_rpe === null || r.to_without_rpe === null ? null : r.to_reported_rpe - r.to_without_rpe;
-      return r;
-    };
+    return [...found.values()].sort((a, b) => b.leads - a.leads);
+  }
+
+  function routeSummary(leads, route, start, end) {
+    const { from, to, kind } = route;
+    const who = new Set();
+    let leadCount = 0, revenue = 0;
+    for (const l of leads) {
+      if (l.day < start || l.day > end || l.startedIn !== from || l.landed !== to || routeKind(l) !== kind) continue;
+      leadCount++;
+      revenue += l.commission;
+      // Count enquiries, not leads: one enquiry can take more than one cross sell.
+      who.add(kind === "cross" ? l.crossSellId : kind === "follow" ? l.session : l.id);
+    }
+    const fromS = summarise(leads, [], from, start, end);
+    const toS = summarise(leads, [], to, start, end);
+    const diff = (a, b) => (a === null || b === null ? null : a - b);
+    const n = who.size;
     return {
-      total: finish(total),
-      rows: periods.map((p) => ({ ...finish(byPeriod.get(p)), period: p, ...periodLabel(p, gran, start, end) })),
+      n, leads: leadCount, N: fromS.blended_enquiries, share: ratio(n, fromS.blended_enquiries),
+      revenue, each: ratio(revenue, n),
+      fromRpe: { reported: fromS.reported_rpe, actual: fromS.rpe, difference: diff(fromS.rpe, fromS.reported_rpe) },
+      toRpe: { reported: toS.reported_rpe, actual: toS.rpe, difference: diff(toS.rpe, toS.reported_rpe) },
     };
   }
 
@@ -1070,7 +1067,7 @@ const Engine = (() => {
     loadFiles, dedupe, prepareRows, attributeLeads, formStarts, mappingHealth, build,
     applyFilters, startsAvailable, activeKeys,
     lastFullDay, comparisonRange, periodStart, periodLabel, allPeriods,
-    summarise, breakdown, rollingRpe, routingDetail, routedJourney, channelBridge, pctChange, ppChange, acceptanceChecks,
+    summarise, breakdown, rollingRpe, routingDetail, routesInData, routeSummary, channelBridge, pctChange, ppChange, acceptanceChecks,
   };
 })();
 if (typeof module !== "undefined") module.exports = Engine;
@@ -1198,7 +1195,7 @@ if (typeof module !== "undefined") module.exports = Engine;
     files: [], model: null, filterOptions: {},
     start: null, end: null, gran: "Day", compare: "Previous period",
     channels: [...CONFIG.dashboardChannels], followOns: false,
-    routeFrom: CONFIG.headline.from, routeTo: CONFIG.headline.channel, bridgeChannel: CONFIG.headline.channel,
+    route: null, bridgeChannel: CONFIG.headline.channel,
     selection: {}, openHealth: false, messages: [], filterSearch: {},
   };
   let channelOrder = [];
@@ -1479,88 +1476,36 @@ if (typeof module !== "undefined") module.exports = Engine;
   const signedMoney = (v) => (v === null ? NA : (v > 0 ? "+" : v < 0 ? "-" : "") + "£" + gb(Math.abs(v), 2, 2));
   const signedPct = (v) => (v === null ? NA : (v > 0 ? "+" : v < 0 ? "-" : "") + gb(Math.abs(v * 100), 0, 0) + "%");
 
-  const ROUTED_COLUMNS = [
-    ["Enquiries started in FROM", "from_enquiries", fmt.count],
-    ["Routed to TO", "routed_leads", fmt.count],
-    ["Share routed", "routed_share", fmt.percent],
-    ["Routed revenue", "routed_revenue", fmt.money],
-    ["Routed RPE", "routed_rpe", fmt.money],
-    ["FROM RPE without routed", "kept_rpe", fmt.money],
-    ["FROM blended RPE", "from_rpe", fmt.money],
-    ["TO reported leads", "to_reported_leads", fmt.count],
-    ["TO reported RPE", "to_reported_rpe", fmt.money],
-    ["TO leads without routed", "to_without_leads", fmt.count],
-    ["TO RPE without routed", "to_without_rpe", fmt.money],
-    ["TO lead uplift", "lead_uplift", signedPct],
-    ["TO revenue uplift", "revenue_uplift", signedPct],
-  ];
-  const routedLabel = (label, from, to) => label.replace("FROM", from).replace("TO", to);
+  const ROUTE_SUFFIX = { routed: "", cross: " (cross sell)", follow: " (same-session follow-on)" };
+  const routeName = (r) => `${r.from} to ${r.to}${ROUTE_SUFFIX[r.kind]}`;
 
-  function routedPanel(leads) {
-    const { start, end, gran, routeFrom: from, routeTo: to } = state;
-    const r = E.routedJourney(leads, from, to, start, end, gran);
-    lastRender.routed = r;
-    const t = r.total;
-    const opts = (cur, skip) => channelOrder.filter((c) => c !== skip && c !== E.UNMAPPED)
-      .map((c) => `<option ${c === cur ? "selected" : ""}>${esc(c)}</option>`).join("");
-    const kv = (label, value, key) => `<div class="kv ${key ? "key" : ""}"><span>${label}</span><span>${value}</span></div>`;
-    const addons = t.routed_leads - t.routed_enquiries;
-    const who = addons === 0
-      ? `${fmt.count(t.routed_enquiries)} of ${fmt.count(t.from_enquiries)} ${esc(from)} enquiries (${fmt.percent(t.routed_share)})`
-      : t.routed_enquiries === 0
-        ? `${fmt.count(addons)} add-on leads (such as cross sells) from ${esc(from)} customers`
-        : `${fmt.count(t.routed_leads)} leads from ${esc(from)} customers (${fmt.count(t.routed_enquiries)} enquiries and ${fmt.count(addons)} add-ons)`;
-    const summary = t.routed_leads
-      ? `${who} landed as ${esc(to)}, earning ${fmt.money(t.routed_revenue)} (${fmt.money(t.routed_rpe)} a lead).
-         ${esc(to)} reports them as its own, which adds ${signedPct(t.lead_uplift)} to its leads and ${signedPct(t.revenue_uplift)} to its revenue${
-           t.rpe_effect !== null ? ` and moves its RPE by ${signedMoney(t.rpe_effect)}` : ""}.`
-      : `No ${esc(from)} customers landed as ${esc(to)} in this period.`;
-    const table = `<div class="tablewrap"><table><thead><tr><th>Period</th>${ROUTED_COLUMNS.map(([l]) => `<th>${esc(routedLabel(l, from, to))}</th>`).join("")}</tr></thead><tbody>${
-      r.rows.map((row) => `<tr class="${row.isPart ? "part" : ""}"><td>${esc(row.label)}</td>${ROUTED_COLUMNS.map(([, k, f]) => `<td>${f(row[k])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  function routedPanel(leads, allLeads) {
+    const { start, end } = state;
+    const routes = E.routesInData(allLeads).filter((r) => r.from !== E.UNMAPPED && r.to !== E.UNMAPPED);
+    if (!routes.length) return "";
+    const h = CONFIG.headline;
+    let route = routes.find((r) => r.key === state.route)
+      || routes.find((r) => r.from === h.from && r.to === h.channel && r.kind === "routed") || routes[0];
+    state.route = route.key;
+    const { from, to } = route;
+    const t = E.routeSummary(leads, route, start, end);
+    const outcome = route.kind === "routed" ? `ended up as ${esc(to)} leads`
+      : route.kind === "cross" ? `also took ${/^[aeiou]/i.test(to) ? "an" : "a"} ${esc(to)} cross sell`
+      : `also had ${/^[aeiou]/i.test(to) ? "an" : "a"} ${esc(to)} lead in the same session`;
+    const first = t.N
+      ? `${fmt.count(t.n)} of ${fmt.count(t.N)} ${esc(from)} enquiries (${fmt.percent(t.share)}) ${outcome}, worth ${fmt.money(t.revenue)} between them${t.n ? ` (${fmt.money(t.each)} each)` : ""}.`
+      : `There were no ${esc(from)} enquiries in this period.`;
+    const second = t.fromRpe.actual !== null && t.fromRpe.reported !== null
+      ? ` That makes ${/^[aeiou]/i.test(from) ? "an" : "a"} ${esc(from)} enquiry worth <strong>${fmt.money(t.fromRpe.actual)}</strong>, not the ${fmt.money(t.fromRpe.reported)} it reports.`
+      : "";
+    const row = (label, r) => `<tr><td>${label}</td><td>${fmt.money(r.reported)}</td><td><strong>${fmt.money(r.actual)}</strong></td><td>${signedMoney(r.difference)}</td></tr>`;
     return `<section class="card routed" id="routedPanel">
-      <div class="card-head" style="justify-content:space-between;flex-wrap:wrap">
-        <h2>${esc(from)} into ${esc(to)}</h2>
-        <div class="pick small"><span class="muted">Started in</span><select id="routeFrom">${opts(from, to)}</select>
-          <span class="muted">landed as</span><select id="routeTo">${opts(to, from)}</select></div>
-      </div>
-      <p class="summary">${summary}</p>
-      <div class="pair">
-        <div class="side"><h4><span class="swatch" style="background:${colourOf(from)}"></span>${esc(from)} journey</h4>
-          ${kv("Enquiries", fmt.count(t.from_enquiries))}
-          ${kv(`Leads that landed as ${esc(to)}`, fmt.count(t.routed_leads) + (t.routed_enquiries ? ` (${fmt.percent(t.routed_share)} of enquiries)` : ""))}
-          ${kv("Revenue from routed customers", fmt.money(t.routed_revenue))}
-          ${kv("RPE of routed customers", fmt.money(t.routed_rpe))}
-          ${kv(`${esc(from)} RPE leaving them out`, fmt.money(t.kept_rpe))}
-          ${kv(`${esc(from)} blended RPE (the real figure)`, fmt.money(t.from_rpe), true)}
-        </div>
-        <div class="side"><h4><span class="swatch" style="background:${colourOf(to)}"></span>${esc(to)}</h4>
-          ${kv("As reported today", `${fmt.count(t.to_reported_leads)} leads, ${fmt.money(t.to_reported_revenue)}`)}
-          ${kv("Reported RPE", fmt.money(t.to_reported_rpe))}
-          ${kv(`Without routed ${esc(from)} customers`, `${fmt.count(t.to_without_leads)} leads, ${fmt.money(t.to_without_revenue)}`)}
-          ${kv(`RPE without them (the real figure)`, fmt.money(t.to_without_rpe), true)}
-          ${kv("Extra leads it gets credit for", `${fmt.count(t.routed_leads)} (${signedPct(t.lead_uplift)})`)}
-          ${kv("Extra revenue it gets credit for", `${fmt.money(t.routed_revenue)} (${signedPct(t.revenue_uplift)})`)}
-        </div>
-      </div>
-      <details class="breakdown"><summary>By ${gran.toLowerCase()}</summary>${table}
-        <div class="toolbar"><button class="btn small" id="exportRouted">Download this table (CSV)</button></div></details>
+      <select id="routeSelect" class="route-select" aria-label="Route">${routes.map((r) =>
+        `<option value="${esc(r.key)}" ${r.key === route.key ? "selected" : ""}>${esc(routeName(r))}</option>`).join("")}</select>
+      <p class="summary">${first}${second}</p>
+      <div class="tablewrap" style="margin-top:12px"><table class="rpe-compare"><thead><tr><th></th><th>Reported</th><th>Actual</th><th>Difference</th></tr></thead>
+        <tbody>${row(`${esc(from)} RPE`, t.fromRpe)}${row(`${esc(to)} RPE`, t.toRpe)}</tbody></table></div>
     </section>`;
-  }
-
-  function exportRouted() {
-    const { routed, start, end, gran } = lastRender;
-    const { routeFrom: from, routeTo: to } = state;
-    const q = (v) => { const s = String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-    const lines = [["Period", "Period start", "Part period", ...ROUTED_COLUMNS.map(([l]) => routedLabel(l, from, to))].map(q).join(",")];
-    for (const row of routed.rows) {
-      lines.push([row.label, E.isoFromDay(row.period), row.isPart ? "Yes" : "No", ...ROUTED_COLUMNS.map(([, k]) => {
-        const v = row[k];
-        return v === null ? "" : Number.isInteger(v) ? v : v.toFixed(4);
-      })].map(q).join(","));
-    }
-    const filters = describeFilters();
-    if (filters) lines.push("", q(`Filtered: ${filters}`));
-    download(lines.join("\n"), `routed-${from}-to-${to}-${E.isoFromDay(start)}-to-${E.isoFromDay(end)}-${gran.toLowerCase()}.csv`.toLowerCase().replace(/\s+/g, "-"));
   }
 
   function download(text, name) {
@@ -1741,7 +1686,7 @@ if (typeof module !== "undefined") module.exports = Engine;
       <div class="subline">${sub.join(" · ")}</div>
       <div class="filterline">${filters ? `<b>Filtered:</b> ${esc(filters)}` : `<span class="muted">No filters applied</span>`}</div>
       <h2 class="headline-title">Headline</h2>
-      ${routedPanel(leads)}
+      ${routedPanel(leads, state.followOns ? m.leadsWithFollowOns : m.leads)}
       ${bridgePanel(leads)}
       <h2 class="headline-title">By channel</h2>
       <details class="panel"><summary>What these figures mean</summary><div class="body"><dl class="defs">${
@@ -1757,9 +1702,7 @@ if (typeof module !== "undefined") module.exports = Engine;
       <div class="notes" id="chartNotes"></div>` : ""}`;
 
     $("#runChecks").addEventListener("click", runChecks);
-    $("#routeFrom").addEventListener("change", (e) => { state.routeFrom = e.target.value; renderMain(); });
-    $("#routeTo").addEventListener("change", (e) => { state.routeTo = e.target.value; renderMain(); });
-    $("#exportRouted").addEventListener("click", exportRouted);
+    $("#routeSelect")?.addEventListener("change", (e) => { state.route = e.target.value; renderMain(); });
     $("#bridgeChannel").addEventListener("change", (e) => { state.bridgeChannel = e.target.value; renderMain(); });
     $("#exportBridge").addEventListener("click", exportBridge);
     if (channels.length) {

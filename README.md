@@ -23,15 +23,18 @@ pass.
 
 ## Headline
 
-The top of the page has two parts. Both follow the date range and filters, and
-each has a table by period you can download.
+The top of the page has two parts. Both follow the date range and filters.
 
-1. **Leased Lines into Broadband**: how many Leased Lines customers landed as
-   Broadband, what they earned, and Leased Lines RPE with and without them.
+1. **Routes**: pick a route from the dropdown (it only lists routes found in
+   the data, Leased Lines to Broadband first). One sentence says how many
+   enquiries took that route and what they were worth, then a table compares
+   reported and actual RPE for both channels. Cross sells are described as
+   extra leads rather than replacements.
 2. **Broadband step by step**: Broadband as reported today, less the Leased
    Lines customers routed in, its own leads split into broadband and
    broadband-mobile, plus the energy cross sells from its customers, ending at
-   Broadband blended (the real figure). Each step shows its effect on RPE.
+   Broadband blended (the real figure). Each step shows its effect on RPE, and
+   there's a table by period you can download.
 
 Change the defaults under `headline` in the EDIT HERE section, and the friendly
 form type names under `formTypeLabels`.

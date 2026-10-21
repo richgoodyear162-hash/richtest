@@ -23,9 +23,9 @@ for (const c of spec.cases) {
   const summary = Engine.summarise(leads, starts, c.channel, s, e, ok);
   const table = Engine.breakdown(leads, starts, c.channel, s, e, c.gran, ok)
     .map((r) => ({ label: r.label, isPart: r.isPart, blended_revenue: r.blended_revenue, blended_enquiries: r.blended_enquiries, form_starts: r.form_starts }));
-  const routed = Engine.routedJourney(leads, c.channel === "Broadband" ? "Leased Lines" : c.channel, "Broadband", s, e, c.gran);
+  const routes = Engine.routesInData(leads).map((r) => ({ ...r, summary: Engine.routeSummary(leads, r, s, e) }));
   const bridge = Engine.channelBridge(leads, c.channel, s, e, c.gran);
-  out.cases.push({ summary, table, routed: routed.total, routedRows: routed.rows.length, bridge: bridge.total,
+  out.cases.push({ summary, table, routes, bridge: bridge.total,
     bridgeRowsRevenue: bridge.rows.reduce((t, r) => t + r.blended_revenue, 0) });
 }
 out.checks = Engine.acceptanceChecks(model).length;

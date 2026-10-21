@@ -12,6 +12,7 @@ import subprocess
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 import loader
@@ -112,7 +113,7 @@ def test_html_engine_matches_python(tmp_path):
                 assert got["summary"][key] is None, (case, key)
             else:
                 assert got["summary"][key] == pytest.approx(value), (case, key)
-        check_routed(leads, case, s, e, got["routed"])
+        check_routes(leads, s, e, got["routes"])
         check_bridge(leads, case, s, e, got["bridge"], want)
         assert got["bridgeRowsRevenue"] == pytest.approx(want["blended_revenue"])
         table = breakdown(leads, starts, case["channel"], s, e, case["gran"], ok)
@@ -122,30 +123,33 @@ def test_html_engine_matches_python(tmp_path):
         assert [r["blended_enquiries"] for r in got["table"]] == table["blended_enquiries"].tolist()
 
 
-def check_routed(leads, case, start, end, got):
-    """The routed customers panel, worked out independently with pandas."""
-    src = "Leased Lines" if case["channel"] == "Broadband" else case["channel"]
-    to = "Broadband"
+def check_routes(leads, start, end, routes):
+    """The route panel, worked out independently with pandas."""
+    kinds = {"Cross sell": "cross", "Session follow-on": "follow"}
+    moved = leads[leads["started_in"] != leads["landed"]]
+    kind = moved["route"].map(kinds).fillna("routed")
+    expected = moved.assign(kind=kind).groupby(["started_in", "landed", "kind"]).size()
+    assert {(r["from"], r["to"], r["kind"]): r["leads"] for r in routes} == expected.to_dict()
+
     period = in_range(leads, start, end)
-    started = period[period["started_in"] == src]
-    routed = started[started["landed"] == to]
-    kept = started[started["landed"] == src]
-    reported = period[period["landed"] == to]
-    assert got["from_enquiries"] == int((~started["is_addon"]).sum())
-    assert got["from_revenue"] == pytest.approx(started["commission"].sum())
-    assert got["routed_leads"] == len(routed)
-    assert got["routed_revenue"] == pytest.approx(routed["commission"].sum())
-    assert got["kept_leads"] == len(kept)
-    assert got["to_reported_leads"] == len(reported)
-    assert got["to_without_leads"] == len(reported) - len(routed)
-    assert got["to_without_revenue"] == pytest.approx(reported["commission"].sum() - routed["commission"].sum())
-    if src == "Leased Lines":
-        # Broadband without routed leased lines customers is its flattened figure
-        # when leased lines is the only journey that routes into broadband.
-        others = reported[(reported["started_in"] != to) & (reported["started_in"] != src)]
-        if others.empty and got["to_without_leads"]:
-            flat = reported[reported["started_in"] == to]
-            assert got["to_without_rpe"] == pytest.approx(flat["commission"].sum() / len(flat))
+    no_starts = pd.DataFrame({"journey": [], "date": pd.Series(dtype="datetime64[ns]"), "completed": []})
+    for r in routes:
+        p = period[(period["started_in"] == r["from"]) & (period["landed"] == r["to"])]
+        p = p[p["route"].map(kinds).fillna("routed") == r["kind"]]
+        key = {"cross": "cross_sell_id", "follow": "session", "routed": "id"}[r["kind"]]
+        got = r["summary"]
+        assert got["n"] == p[key].nunique()
+        assert got["leads"] == len(p)
+        assert got["revenue"] == pytest.approx(p["commission"].sum())
+        src = summarise(leads, no_starts, r["from"], start, end)
+        dst = summarise(leads, no_starts, r["to"], start, end)
+        assert got["N"] == src["blended_enquiries"]
+        for side, want in (("fromRpe", src), ("toRpe", dst)):
+            for field, value in (("reported", want["reported_rpe"]), ("actual", want["rpe"])):
+                if value is None:
+                    assert got[side][field] is None
+                else:
+                    assert got[side][field] == pytest.approx(value)
 
 
 def check_bridge(leads, case, start, end, got, summary):
