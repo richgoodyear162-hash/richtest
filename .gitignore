@@ -1,0 +1,8 @@
+# Lead exports and anything derived from them stay on this machine.
+*.csv
+*.CSV
+data/
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/

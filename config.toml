@@ -1,0 +1,115 @@
+# Blended RPE dashboard settings.
+# Edit this file to add forms, form types, channels or event markers.
+# The dashboard picks up changes the next time it reprocesses (restart it, or
+# add or remove an export).
+
+# Leads created before this date are ignored. Earlier exports only hold
+# leased lines and invoice.
+start_date = 2026-06-01
+
+# Channels shown on the dashboard, in order. To add Mobile later, add
+# "Mobile" here and give it a [[channels]] entry below.
+dashboard_channels = ["Leased Lines", "Broadband", "Energy"]
+
+# Lead types that sit inside another journey. They are not counted as form
+# starts.
+cross_sell_form_types = ["cross-sell-energy"]
+
+# Partial leads have this prefix on formType and never count as enquiries.
+partial_prefix = "partial-"
+
+# How far to follow cross sell links (lead -> parent -> grandparent ...).
+max_cross_sell_depth = 5
+
+# Column names in the lead exports. Change the right hand side if the admin
+# export renames a column.
+[columns]
+id = "id"
+form_type = "formType"
+created_at = "created_at"
+updated_at = "updated_at"
+commission = "commission"
+form_id = "form_id"
+cross_sell_id = "cross_sell_id"
+session = "session_id"
+utm_source = "utm_source"
+utm_medium = "utm_medium"
+campaign = "campaign_name"
+match_type = "match_type"
+device = "device"
+test_arm = "variation_name"
+day_of_week = "day_of_week"
+buyer = "provider_name"
+valid = "valid"
+region = "region"
+
+# Table A (form_types): formType to channel, the product a lead landed as.
+# Table B (form_ids): form_id to home channel, the journey a lead started in.
+# New forms appear regularly (form 35 appeared on 13 October): add them here.
+# Any form id or form type not listed is flagged in the data health panel.
+
+[[channels]]
+name = "Leased Lines"
+form_types = ["leased-lines"]
+form_ids = [5, 21, 24, 25]
+
+[[channels]]
+name = "Broadband"
+# broadband-mobile is a broadband lead with a mobile opt-in, not a second lead.
+form_types = ["broadband", "broadband-mobile"]
+form_ids = [2, 7, 12, 14, 30, 32]
+
+[[channels]]
+name = "Energy"
+form_types = [
+  "compare-business-energy",
+  "compare-business-energy-nbi",
+  "compare-business-energy-low-usage",
+  "corporate-business-energy",
+  "cross-sell-energy",
+]
+form_ids = [6, 19, 29]
+
+# Channels not shown by default still need mapping so every lead counts once.
+# Copy the remaining rows of table A and table B from reference_attribution.py
+# into entries like this one:
+#
+# [[channels]]
+# name = "Invoice Finance"
+# form_types = ["invoice"]
+# form_ids = []
+
+# Traffic source groups, built from utm_source and utm_medium. Rules are
+# checked in the order below; matching is case insensitive and on part of the
+# value. Replace with source_group from reference_attribution.py if it differs.
+[traffic_sources]
+paid_mediums = ["cpc", "ppc", "paid", "sem"]
+google_sources = ["google", "adwords"]
+microsoft_sources = ["bing", "microsoft", "msn"]
+ai_sources = ["chatgpt", "openai", "perplexity", "claude", "gemini", "copilot"]
+email_terms = ["email", "e-mail", "newsletter", "mailchimp", "klaviyo"]
+organic_mediums = ["organic"]
+search_engines = ["google", "bing", "yahoo", "duckduckgo", "ecosia", "yandex", "baidu"]
+partner_mediums = ["referral", "affiliate", "partner"]
+direct_values = ["", "(direct)", "direct", "(none)", "none", "(not set)"]
+
+# Campaign type, built from campaign_name. A blank campaign is "None".
+[campaign_types]
+brand_terms = ["brand"]
+
+# Event markers on the trend chart.
+[[events]]
+date = 2026-07-29
+label = "Leased lines starts routing to broadband"
+
+[[events]]
+date = 2026-08-01
+label = "Focus Group goes from £240 to £310 a lead"
+
+[[events]]
+date = 2026-09-28
+label = "Sky leased lines goes from £220 to £280 a lead"
+
+[[events]]
+date = 2026-10-05
+label = "Energy cross sell goes live on broadband"
