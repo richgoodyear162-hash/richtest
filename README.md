@@ -21,6 +21,14 @@ To check the numbers, open **Acceptance checks** on the page and click
 **Run checks**. With exports covering 1 June to 21 October 2026, all 15 should
 pass.
 
+## Routed customers
+
+The **Routed customers** section follows customers who started in one journey
+and landed as another product (Leased Lines to Broadband by default). It shows
+what they earned, Leased Lines RPE with and without them, and how much they add
+to Broadband's reported leads, revenue and RPE, with a table by period you can
+download. It follows the date range and filters like everything else.
+
 ## Changing settings
 
 Open `dashboard.html` in a text editor (Notepad is fine) and look for

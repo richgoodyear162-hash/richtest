@@ -16,7 +16,7 @@ import pytest
 
 import loader
 import pipeline
-from metrics import FILTERS, apply_filters, breakdown, starts_available, summarise
+from metrics import FILTERS, apply_filters, breakdown, in_range, starts_available, summarise
 from settings import load_settings
 from synthetic import frame, random_export, row, to_excel_format
 
@@ -112,8 +112,35 @@ def test_html_engine_matches_python(tmp_path):
                 assert got["summary"][key] is None, (case, key)
             else:
                 assert got["summary"][key] == pytest.approx(value), (case, key)
+        check_routed(leads, case, s, e, got["routed"])
         table = breakdown(leads, starts, case["channel"], s, e, case["gran"], ok)
         assert [r["label"] for r in got["table"]] == table["label"].tolist()
         assert [r["isPart"] for r in got["table"]] == table["is_part"].tolist()
         assert [r["blended_revenue"] for r in got["table"]] == pytest.approx(table["blended_revenue"].tolist())
         assert [r["blended_enquiries"] for r in got["table"]] == table["blended_enquiries"].tolist()
+
+
+def check_routed(leads, case, start, end, got):
+    """The routed customers panel, worked out independently with pandas."""
+    src = "Leased Lines" if case["channel"] == "Broadband" else case["channel"]
+    to = "Broadband"
+    period = in_range(leads, start, end)
+    started = period[period["started_in"] == src]
+    routed = started[started["landed"] == to]
+    kept = started[started["landed"] == src]
+    reported = period[period["landed"] == to]
+    assert got["from_enquiries"] == int((~started["is_addon"]).sum())
+    assert got["from_revenue"] == pytest.approx(started["commission"].sum())
+    assert got["routed_leads"] == len(routed)
+    assert got["routed_revenue"] == pytest.approx(routed["commission"].sum())
+    assert got["kept_leads"] == len(kept)
+    assert got["to_reported_leads"] == len(reported)
+    assert got["to_without_leads"] == len(reported) - len(routed)
+    assert got["to_without_revenue"] == pytest.approx(reported["commission"].sum() - routed["commission"].sum())
+    if src == "Leased Lines":
+        # Broadband without routed leased lines customers is its flattened figure
+        # when leased lines is the only journey that routes into broadband.
+        others = reported[(reported["started_in"] != to) & (reported["started_in"] != src)]
+        if others.empty and got["to_without_leads"]:
+            flat = reported[reported["started_in"] == to]
+            assert got["to_without_rpe"] == pytest.approx(flat["commission"].sum() / len(flat))
