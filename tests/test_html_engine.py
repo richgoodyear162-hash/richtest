@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 
 import loader
+from attribution import prepare_rows
 import pipeline
 from metrics import FILTERS, apply_filters, breakdown, in_range, starts_available, summarise
 from settings import load_settings
@@ -44,6 +45,13 @@ def write_exports(tmp_path):
         row(id=900001, formType="broadband", created_at="2026-10-13 09:00:00", form_id=35, session_id="z1", commission=47.5),
         row(id=900002, formType="invoice", created_at="2026-08-02 10:00:00", form_id=40, session_id="z2", commission=95),
         row(id=900003, formType="leased-lines", created_at="2026-05-20 10:00:00", form_id=5, session_id="z3", commission=240),
+        # A leased line partial, then broadband on a broadband form: LL2BB by partial only.
+        row(id=900004, formType="partial-leased-lines", created_at="2026-09-03 09:00:00", form_id=5, session_id="z4"),
+        row(id=900005, formType="broadband", created_at="2026-09-03 09:10:00", form_id=2, session_id="z4", commission=45),
+        # Completed leased lines, then broadband from the leased lines form: form rule only.
+        row(id=900006, formType="partial-leased-lines", created_at="2026-09-04 09:00:00", form_id=5, session_id="z5"),
+        row(id=900007, formType="leased-lines", created_at="2026-09-04 09:05:00", form_id=5, session_id="z5", commission=280),
+        row(id=900008, formType="broadband", created_at="2026-09-04 09:20:00", form_id=5, session_id="z5", commission=50),
     ])
     for name, part in [
         ("enquiries-master-anon-1.csv", export.iloc[: half + 200]),
@@ -70,6 +78,7 @@ def test_html_engine_matches_python(tmp_path):
     settings = load_settings()
     exports = write_exports(tmp_path)
     model = pipeline.build(settings, exports, cache_dir=None)
+    prepared = prepare_rows(loader.load_leads(settings, exports, cache_dir=None).rows, settings)
 
     rng = random.Random(5)
     cases = []
@@ -114,7 +123,7 @@ def test_html_engine_matches_python(tmp_path):
             else:
                 assert got["summary"][key] == pytest.approx(value), (case, key)
         check_routes(leads, s, e, got["routes"])
-        check_phil(leads, s, e, got["phil"])
+        check_phil(leads, prepared, s, e, got["phil"])
         check_bridge(leads, case, s, e, got["bridge"], want)
         assert got["bridgeRowsRevenue"] == pytest.approx(want["blended_revenue"])
         table = breakdown(leads, starts, case["channel"], s, e, case["gran"], ok)
@@ -179,16 +188,31 @@ def check_bridge(leads, case, start, end, got, summary):
     assert got["own_revenue"] + got["out_revenue"] == pytest.approx(got["blended_revenue"])
 
 
-def check_phil(leads, start, end, rows):
-    """Phil's view, worked out independently with pandas."""
+def check_phil(leads, prepared, start, end, rows):
+    """Phil's view, worked out independently with pandas.
+
+    LL2BB: a broadband lead whose session has a leased line partial at or
+    before it, and no completed leased lines lead.
+    """
+    partial_ll = prepared[prepared["is_partial"] & (prepared["landed"] == "Leased Lines") & (prepared["session"] != "")]
+    first_partial = partial_ll.groupby("session")["created_at"].min()
+    completed_ll = set(prepared[~prepared["is_partial"] & (prepared["landed"] == "Leased Lines")]["session"]) - {""}
+
     period = in_range(leads, start, end)
-    ll = period[(period["started_in"] == "Leased Lines") & ~period["is_addon"]]
-    ll = ll.assign(month=ll["date"].dt.strftime("%Y-%m"))
+    period = period[~period["is_addon"]]
+    period = period.assign(month=period["date"].dt.strftime("%Y-%m"))
+    started = period["session"].map(first_partial)
+    is_llbb = (
+        (period["landed"] == "Broadband")
+        & started.notna() & (started <= period["created_at"])
+        & ~period["session"].isin(completed_ll)
+    )
     months = pd.period_range(start, end, freq="M").strftime("%Y-%m").tolist()
     assert len(rows) == len(months)
     for month, got in zip(months, rows):
-        m = ll[ll["month"] == month]
-        kept, routed = m[m["landed"] == "Leased Lines"], m[m["landed"] == "Broadband"]
+        in_month = period["month"] == month
+        kept = period[in_month & (period["landed"] == "Leased Lines")]
+        routed = period[in_month & is_llbb]
         assert got["ll_leads"] == len(kept)
         assert got["bb_leads"] == len(routed)
         total = kept["commission"].sum() + routed["commission"].sum()

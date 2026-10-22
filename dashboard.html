@@ -698,12 +698,35 @@ const Engine = (() => {
     };
   }
 
+  // For each lead, the journeys of partial rows earlier in its session, and
+  // the products completed anywhere in its session. Phil's view uses these to
+  // spot a leased line partial that became a broadband lead.
+  function annotateSessions(leads, prepared) {
+    const partials = new Map(), completed = new Map();
+    for (const r of prepared) {
+      if (r.session === "") continue;
+      if (r.isPartial) {
+        if (!partials.has(r.session)) partials.set(r.session, []);
+        partials.get(r.session).push(r);
+      } else {
+        if (!completed.has(r.session)) completed.set(r.session, new Set());
+        completed.get(r.session).add(r.landed);
+      }
+    }
+    for (const l of leads) {
+      const ps = l.session === "" ? [] : partials.get(l.session) || [];
+      l.partialBefore = [...new Set(ps.filter((p) => p.createdAt <= l.createdAt).map((p) => p.landed))];
+      l.sessionCompleted = l.session === "" ? [l.landed] : [...(completed.get(l.session) || [])];
+    }
+    return leads;
+  }
+
   function build(files, config) {
     const loaded = loadFiles(files, config);
     const prepared = prepareRows(loaded.rows, config);
     return {
-      leads: attributeLeads(prepared, config, false),
-      leadsWithFollowOns: attributeLeads(prepared, config, true),
+      leads: annotateSessions(attributeLeads(prepared, config, false), prepared),
+      leadsWithFollowOns: annotateSessions(attributeLeads(prepared, config, true), prepared),
       starts: formStarts(prepared),
       health: { ...loaded.health, ...mappingHealth(prepared) },
     };
@@ -901,17 +924,21 @@ const Engine = (() => {
     };
   }
 
-  // Phil's view: by month, leads that started and landed in `from` (LL),
-  // leads that started in `from` and landed as `to` (LL2BB), and what they
-  // earned. Add-ons such as cross sells are left out.
+  // Phil's view: by month, leads that landed as `from` (LL), and leads where
+  // a `from` partial became a `to` lead (LL2BB): the session has a `from`
+  // partial before the lead and no completed `from` lead. Add-ons such as
+  // cross sells are left out.
+  const partialBecame = (l, from, to) =>
+    l.landed === to && !l.isAddon && l.partialBefore.includes(from) && !l.sessionCompleted.includes(from);
+
   function philsView(leads, from, to, start, end) {
     const months = allPeriods(start, end, "Month");
     const byMonth = new Map(months.map((m) => [m, { ll_leads: 0, ll_revenue: 0, bb_leads: 0, bb_revenue: 0 }]));
     for (const l of leads) {
-      if (l.day < start || l.day > end || l.startedIn !== from || l.isAddon) continue;
+      if (l.day < start || l.day > end || l.isAddon) continue;
       const row = byMonth.get(periodStart(l.day, "Month"));
       if (l.landed === from) { row.ll_leads++; row.ll_revenue += l.commission; }
-      else if (l.landed === to) { row.bb_leads++; row.bb_revenue += l.commission; }
+      else if (partialBecame(l, from, to)) { row.bb_leads++; row.bb_revenue += l.commission; }
     }
     return months.map((m) => {
       const r = byMonth.get(m);
@@ -924,6 +951,19 @@ const Engine = (() => {
       r.bb_share = ratio(r.bb_leads, r.total_leads);
       return { ...r, period: m, ...periodLabel(m, "Month", start, end) };
     });
+  }
+
+  // Where Phil's partial rule and the form rule used elsewhere disagree.
+  function philsReconcile(leads, from, to, start, end) {
+    let partialOnly = 0, formOnly = 0, both = 0;
+    for (const l of leads) {
+      if (l.day < start || l.day > end || l.isAddon || l.landed !== to) continue;
+      const byPartial = partialBecame(l, from, to), byForm = l.startedIn === from;
+      if (byPartial && byForm) both++;
+      else if (byPartial) partialOnly++;
+      else if (byForm) formOnly++;
+    }
+    return { both, partialOnly, formOnly };
   }
 
   // A channel step by step: as reported, less leads routed in from other
@@ -1093,7 +1133,7 @@ const Engine = (() => {
     loadFiles, dedupe, prepareRows, attributeLeads, formStarts, mappingHealth, build,
     applyFilters, startsAvailable, activeKeys,
     lastFullDay, comparisonRange, periodStart, periodLabel, allPeriods,
-    summarise, breakdown, rollingRpe, routingDetail, routesInData, routeSummary, channelBridge, philsView, pctChange, ppChange, acceptanceChecks,
+    summarise, breakdown, rollingRpe, routingDetail, routesInData, routeSummary, channelBridge, philsView, philsReconcile, pctChange, ppChange, acceptanceChecks,
   };
 })();
 if (typeof module !== "undefined") module.exports = Engine;
@@ -1660,6 +1700,7 @@ if (typeof module !== "undefined") module.exports = Engine;
       <div class="card-head"><h2>Phil's view</h2></div>
       <p class="small muted" style="margin-top:-6px">Every month in the data, whatever the date range. ${
         filters ? `Filtered: ${esc(filters)}.` : "No filters applied. To compare with net figures, set the Valid lead filter on the left."}</p>
+      ${philsNote(leads, from, to, first, last, ll, bb)}
       ${table("Apples for apples", `Total revenue ÷ total leads, ${ll} and ${llbb}`,
         [`Total leads (${ll}+${llbb})`, "Total rev", "RPE"],
         (r) => [fmt.count(r.total_leads), fmt.moneyWhole(r.total_revenue), fmt.money(r.total_rpe)])}
@@ -1671,6 +1712,19 @@ if (typeof module !== "undefined") module.exports = Engine;
         (r) => [fmt.count(r.ll_leads), fmt.count(r.bb_leads), fmt.percent(r.bb_share)])}
       <div class="toolbar"><button class="btn small" id="exportPhil">Download Phil's view (CSV)</button></div>
     </section>`;
+  }
+
+  function philsNote(leads, from, to, first, last, ll, bb) {
+    const r = E.philsReconcile(leads, from, to, first, last);
+    const parts = [`${ll}2${bb} is a ${esc(to)} lead where the same session started as a ${esc(from)} partial and never completed as ${esc(from)}.`];
+    if (r.partialOnly || r.formOnly) {
+      parts.push(`Against the form-based count used in the rest of the dashboard: ${fmt.count(r.both)} leads match both,
+        ${fmt.count(r.partialOnly)} only have a ${esc(from)} partial (they were on a ${esc(to)} form), and
+        ${fmt.count(r.formOnly)} came from a ${esc(from)} form but have no ${esc(from)} partial or also completed as ${esc(from)}.`);
+    } else {
+      parts.push(`This gives the same ${fmt.count(r.both)} leads as the form-based count used in the rest of the dashboard.`);
+    }
+    return `<p class="small muted">${parts.join(" ")}</p>`;
   }
 
   function exportPhil() {

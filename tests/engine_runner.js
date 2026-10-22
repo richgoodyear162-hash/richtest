@@ -26,7 +26,8 @@ for (const c of spec.cases) {
   const routes = Engine.routesInData(leads).map((r) => ({ ...r, summary: Engine.routeSummary(leads, r, s, e) }));
   const bridge = Engine.channelBridge(leads, c.channel, s, e, c.gran);
   const phil = Engine.philsView(leads, "Leased Lines", "Broadband", s, e);
-  out.cases.push({ summary, table, routes, phil, bridge: bridge.total,
+  const reconcile = Engine.philsReconcile(leads, "Leased Lines", "Broadband", s, e);
+  out.cases.push({ summary, table, routes, phil, reconcile, bridge: bridge.total,
     bridgeRowsRevenue: bridge.rows.reduce((t, r) => t + r.blended_revenue, 0) });
 }
 out.checks = Engine.acceptanceChecks(model).length;

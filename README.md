@@ -37,7 +37,10 @@ The top of the page has three parts. Both follow the date range and filters.
    there's a table by period you can download.
 
 3. **Phil's view**: the same three monthly tables as Phil's sheet, for every
-   month in the data (filters apply, the date range doesn't). Apples for apples
+   month in the data (filters apply, the date range doesn't). LL2BB is a
+   Broadband lead whose session started as a Leased Lines partial and never
+   completed as Leased Lines; a note shows where that differs from the
+   form-based rule used elsewhere. Apples for apples
    is (LL + LL2BB revenue) ÷ (LL + LL2BB leads). Actual RPE we have to play with
    is that same revenue ÷ LL leads, as in the sheet. % split BB is LL2BB ÷
    (LL + LL2BB). Cross sells are left out. Use the Valid lead filter to compare
