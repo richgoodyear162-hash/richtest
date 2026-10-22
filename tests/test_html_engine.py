@@ -108,6 +108,12 @@ def test_html_engine_matches_python(tmp_path):
     assert js["health"]["unmappedFormIds"] == sorted(h["unmapped_form_ids"]["Form id"])
     assert js["health"]["unmappedFormTypes"] == sorted(h["unmapped_form_types"]["Form type"])
     assert js["checks"] == 15
+    # Phil's view reaches back to January (the 20 May leased line lead is in
+    # May), while everything else still starts on 1 June.
+    history = {r["label"]: r["ll"] for r in js["historyPhil"]}
+    assert list(history)[:5] == ["Jan 2026", "Feb 2026", "Mar 2026", "Apr 2026", "May 2026"]
+    assert history["May 2026"] == 1
+    assert js["mainEarliest"] >= "2026-06-01"
 
     for case, got in zip(cases, js["cases"]):
         selection = {k: set(v) for k, v in case["selection"].items()}

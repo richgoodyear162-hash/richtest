@@ -31,4 +31,7 @@ for (const c of spec.cases) {
     bridgeRowsRevenue: bridge.rows.reduce((t, r) => t + r.blended_revenue, 0) });
 }
 out.checks = Engine.acceptanceChecks(model).length;
+out.historyPhil = Engine.philsView(model.history.leads, "Leased Lines", "Broadband",
+  Engine.dayFromISO("2026-01-01"), Engine.dayFromISO("2026-10-31")).map((r) => ({ label: r.label, ll: r.ll_leads }));
+out.mainEarliest = Engine.isoFromDay(Math.min(...model.leads.map((l) => l.day)));
 process.stdout.write(JSON.stringify(out));

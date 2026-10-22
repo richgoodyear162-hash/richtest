@@ -303,6 +303,11 @@ const CONFIG = {
 
   // The headline at the top of the page: customers routed from one journey
   // into a channel, then that channel step by step.
+  // Phil's view goes back further than the rest of the dashboard. Before
+  // startDate the exports only hold leased lines (and invoice), which is all
+  // it needs.
+  philsViewFrom: "2026-01-01",
+
   // Short names are used in Phil's view, for example LL2BB.
   headline: { from: "Leased Lines", channel: "Broadband", fromShort: "LL", channelShort: "BB" },
 
@@ -509,7 +514,7 @@ const Engine = (() => {
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   }
 
-  function loadFiles(files, config) {
+  function loadFiles(files, config, loadFrom = dayFromISO(config.startDate)) {
     const sorted = files.slice().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     const summaries = [];
     let raw = [];
@@ -532,15 +537,16 @@ const Engine = (() => {
     const deduped = dedupe(dated);
     const startTs = dayFromISO(config.startDate) * 86400;
     const beforeStart = deduped.filter((r) => r.createdAt < startTs).length;
-    const rows = deduped.filter((r) => r.createdAt >= startTs).sort(byTimeThenId);
+    const rows = deduped.filter((r) => r.createdAt >= Math.min(startTs, loadFrom * 86400)).sort(byTimeThenId);
+    const mainRows = rows.filter((r) => r.createdAt >= startTs);
     const health = {
       files: summaries,
       rowsRead: raw.length,
-      rowsAfterDedupe: rows.length,
+      rowsAfterDedupe: mainRows.length,
       duplicatesRemoved: dated.length - deduped.length,
       rowsBeforeStart: beforeStart,
       unreadableDates: unreadable,
-      coverage: rows.length ? [rows[0].createdAt, rows[rows.length - 1].createdAt] : [null, null],
+      coverage: mainRows.length ? [mainRows[0].createdAt, mainRows[mainRows.length - 1].createdAt] : [null, null],
     };
     return { rows, health };
   }
@@ -722,11 +728,26 @@ const Engine = (() => {
   }
 
   function build(files, config) {
-    const loaded = loadFiles(files, config);
-    const prepared = prepareRows(loaded.rows, config);
+    const mainStart = dayFromISO(config.startDate);
+    const historyStart = config.philsViewFrom ? Math.min(mainStart, dayFromISO(config.philsViewFrom)) : mainStart;
+    const loaded = loadFiles(files, config, historyStart);
+    const preparedAll = prepareRows(loaded.rows, config);
+    const prepared = preparedAll.filter((r) => r.day >= mainStart);
+    const leads = annotateSessions(attributeLeads(prepared, config, false), prepared);
+    const leadsWithFollowOns = annotateSessions(attributeLeads(prepared, config, true), prepared);
+    // Phil's view reaches back before startDate, so it gets its own copy
+    // worked out over the longer history.
+    const history = historyStart < mainStart
+      ? {
+        from: historyStart,
+        leads: annotateSessions(attributeLeads(preparedAll, config, false), preparedAll),
+        leadsWithFollowOns: annotateSessions(attributeLeads(preparedAll, config, true), preparedAll),
+      }
+      : { from: mainStart, leads, leadsWithFollowOns };
     return {
-      leads: annotateSessions(attributeLeads(prepared, config, false), prepared),
-      leadsWithFollowOns: annotateSessions(attributeLeads(prepared, config, true), prepared),
+      leads,
+      leadsWithFollowOns,
+      history,
       starts: formStarts(prepared),
       health: { ...loaded.health, ...mappingHealth(prepared) },
     };
@@ -1521,7 +1542,8 @@ if (typeof module !== "undefined") module.exports = Engine;
         ${h.unmappedFormIds.length ? `<div class="msg warn">These form ids aren't in CONFIG. Their leads fall back to the channel they landed as. Add them to the right channel's formIds at the top of this file.</div>${list(h.unmappedFormIds, "Form id")}` : ""}
         ${h.unmappedFormTypes.length ? `<div class="msg warn">These form types aren't in CONFIG, so their leads show as Unmapped. Add them to the right channel's formTypes at the top of this file.</div>${list(h.unmappedFormTypes, "Form type")}` : ""}
         ${h.unreadableDates ? `<div class="msg err">${fmt.count(h.unreadableDates)} rows had a created_at date that couldn't be read and were skipped.</div>` : ""}
-        ${h.rowsBeforeStart ? `<p class="small muted">${fmt.count(h.rowsBeforeStart)} rows from before ${E.fullDate(E.dayFromISO(CONFIG.startDate))} were ignored.</p>` : ""}
+        ${h.rowsBeforeStart ? `<p class="small muted">${fmt.count(h.rowsBeforeStart)} rows from before ${E.fullDate(E.dayFromISO(CONFIG.startDate))} are left out of the main dashboard${
+          CONFIG.philsViewFrom ? `. Phil's view uses them from ${E.fullDate(E.dayFromISO(CONFIG.philsViewFrom))}` : ""}.</p>` : ""}
       </div></details>`;
   }
 
@@ -1682,10 +1704,14 @@ if (typeof module !== "undefined") module.exports = Engine;
     </section>`;
   }
 
-  function philsPanel(leads) {
+  function philsPanel() {
     const m = state.model;
-    const first = E.dayOf(m.health.coverage[0]);
-    const last = Math.max(first, E.lastFullDay(m.health.coverage[1]));
+    const leads = E.applyFilters(state.followOns ? m.history.leadsWithFollowOns : m.history.leads, state.selection);
+    const last = Math.max(E.dayOf(m.health.coverage[0]), E.lastFullDay(m.health.coverage[1]));
+    // Start at the first month with data, but no earlier than philsViewFrom.
+    const firstData = m.history.leads.length ? m.history.leads[0].day : E.dayOf(m.health.coverage[0]);
+    const firstDataMonth = E.periodStart(Math.max(firstData, m.history.from), "Month");
+    const first = Math.max(E.periodStart(m.history.from, "Month"), firstDataMonth);
     const { from, channel: to } = CONFIG.headline;
     const rows = E.philsView(leads, from, to, first, last);
     lastRender.phil = rows;
@@ -1698,8 +1724,9 @@ if (typeof module !== "undefined") module.exports = Engine;
     const filters = describeFilters();
     return `<section class="card" id="philsPanel">
       <div class="card-head"><h2>Phil's view</h2></div>
-      <p class="small muted" style="margin-top:-6px">Every month in the data, whatever the date range. ${
+      <p class="small muted" style="margin-top:-6px">Every month from ${E.MONTHS[E.parts(first).m]} ${E.parts(first).y}, whatever the date range. ${
         filters ? `Filtered: ${esc(filters)}.` : "No filters applied. To compare with net figures, set the Valid lead filter on the left."}</p>
+      ${first > m.history.from ? `<p class="small msg warn">The exports only go back to ${E.fullDate(firstData)}. Upload older exports to fill in from ${E.fullDate(m.history.from)}.</p>` : ""}
       ${philsNote(leads, from, to, first, last, ll, bb)}
       ${table("Apples for apples", `Total revenue ÷ total leads, ${ll} and ${llbb}`,
         [`Total leads (${ll}+${llbb})`, "Total rev", "RPE"],
@@ -1818,7 +1845,7 @@ if (typeof module !== "undefined") module.exports = Engine;
       <h2 class="headline-title">Headline</h2>
       ${routedPanel(leads, state.followOns ? m.leadsWithFollowOns : m.leads)}
       ${bridgePanel(leads)}
-      ${philsPanel(leads)}
+      ${philsPanel()}
       <h2 class="headline-title">By channel</h2>
       <details class="panel"><summary>What these figures mean</summary><div class="body"><dl class="defs">${
         DEFINITIONS.map(([t, d]) => `<dt>${t}</dt><dd>${d}</dd>`).join("")}</dl></div></details>

@@ -37,7 +37,8 @@ The top of the page has three parts. Both follow the date range and filters.
    there's a table by period you can download.
 
 3. **Phil's view**: the same three monthly tables as Phil's sheet, for every
-   month in the data (filters apply, the date range doesn't). LL2BB is a
+   month from 1 January 2026 (`philsViewFrom` in the settings; the rest of the
+   dashboard still starts on 1 June). Filters apply, the date range doesn't. LL2BB is a
    Broadband lead whose session started as a Leased Lines partial and never
    completed as Leased Lines; a note shows where that differs from the
    form-based rule used elsewhere. Apples for apples
