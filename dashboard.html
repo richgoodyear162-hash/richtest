@@ -303,7 +303,8 @@ const CONFIG = {
 
   // The headline at the top of the page: customers routed from one journey
   // into a channel, then that channel step by step.
-  headline: { from: "Leased Lines", channel: "Broadband" },
+  // Short names are used in Phil's view, for example LL2BB.
+  headline: { from: "Leased Lines", channel: "Broadband", fromShort: "LL", channelShort: "BB" },
 
   // Friendlier names for form types in the headline.
   formTypeLabels: {
@@ -900,6 +901,31 @@ const Engine = (() => {
     };
   }
 
+  // Phil's view: by month, leads that started and landed in `from` (LL),
+  // leads that started in `from` and landed as `to` (LL2BB), and what they
+  // earned. Add-ons such as cross sells are left out.
+  function philsView(leads, from, to, start, end) {
+    const months = allPeriods(start, end, "Month");
+    const byMonth = new Map(months.map((m) => [m, { ll_leads: 0, ll_revenue: 0, bb_leads: 0, bb_revenue: 0 }]));
+    for (const l of leads) {
+      if (l.day < start || l.day > end || l.startedIn !== from || l.isAddon) continue;
+      const row = byMonth.get(periodStart(l.day, "Month"));
+      if (l.landed === from) { row.ll_leads++; row.ll_revenue += l.commission; }
+      else if (l.landed === to) { row.bb_leads++; row.bb_revenue += l.commission; }
+    }
+    return months.map((m) => {
+      const r = byMonth.get(m);
+      r.total_leads = r.ll_leads + r.bb_leads;
+      r.total_revenue = r.ll_revenue + r.bb_revenue;
+      // Apples for apples: total revenue over total leads (LL + LL2BB).
+      r.total_rpe = ratio(r.total_revenue, r.total_leads);
+      // As in Phil's sheet: total revenue divided by LL leads only.
+      r.ll_rpe = ratio(r.total_revenue, r.ll_leads);
+      r.bb_share = ratio(r.bb_leads, r.total_leads);
+      return { ...r, period: m, ...periodLabel(m, "Month", start, end) };
+    });
+  }
+
   // A channel step by step: as reported, less leads routed in from other
   // journeys, its own leads by form type, plus what its customers earned
   // elsewhere (such as cross sells), giving blended. A row per period plus a total.
@@ -1067,7 +1093,7 @@ const Engine = (() => {
     loadFiles, dedupe, prepareRows, attributeLeads, formStarts, mappingHealth, build,
     applyFilters, startsAvailable, activeKeys,
     lastFullDay, comparisonRange, periodStart, periodLabel, allPeriods,
-    summarise, breakdown, rollingRpe, routingDetail, routesInData, routeSummary, channelBridge, pctChange, ppChange, acceptanceChecks,
+    summarise, breakdown, rollingRpe, routingDetail, routesInData, routeSummary, channelBridge, philsView, pctChange, ppChange, acceptanceChecks,
   };
 })();
 if (typeof module !== "undefined") module.exports = Engine;
@@ -1616,6 +1642,56 @@ if (typeof module !== "undefined") module.exports = Engine;
     </section>`;
   }
 
+  function philsPanel(leads) {
+    const m = state.model;
+    const first = E.dayOf(m.health.coverage[0]);
+    const last = Math.max(first, E.lastFullDay(m.health.coverage[1]));
+    const { from, channel: to } = CONFIG.headline;
+    const rows = E.philsView(leads, from, to, first, last);
+    lastRender.phil = rows;
+    const ll = CONFIG.headline.fromShort || from, bb = CONFIG.headline.channelShort || to, llbb = `${ll}2${bb}`;
+    const month = (r) => esc(r.isPart ? r.label : E.MONTHS[E.parts(r.period).m]) + (r.isPart ? "" : ` <span class="muted small">${E.parts(r.period).y}</span>`);
+    const table = (title, note, head, cells) => `
+      <h3>${title}</h3><p class="small muted" style="margin:-4px 0 6px">${note}</p>
+      <div class="tablewrap"><table><thead><tr><th>Month</th>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${
+        rows.map((r) => `<tr class="${r.isPart ? "part" : ""}"><td>${month(r)}</td>${cells(r).map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    const filters = describeFilters();
+    return `<section class="card" id="philsPanel">
+      <div class="card-head"><h2>Phil's view</h2></div>
+      <p class="small muted" style="margin-top:-6px">Every month in the data, whatever the date range. ${
+        filters ? `Filtered: ${esc(filters)}.` : "No filters applied. To compare with net figures, set the Valid lead filter on the left."}</p>
+      ${table("Apples for apples", `Total revenue ÷ total leads, ${ll} and ${llbb}`,
+        [`Total leads (${ll}+${llbb})`, "Total rev", "RPE"],
+        (r) => [fmt.count(r.total_leads), fmt.moneyWhole(r.total_revenue), fmt.money(r.total_rpe)])}
+      ${table("Actual RPE we have to play with", `Total revenue ÷ ${ll} leads`,
+        [`${ll} leads`, "Rev", "RPE"],
+        (r) => [fmt.count(r.ll_leads), fmt.moneyWhole(r.total_revenue), fmt.money(r.ll_rpe)])}
+      ${table(`% split ${bb}`, `${llbb} as a share of ${ll} + ${llbb}`,
+        [`${ll} enquiries`, `${bb} enquiries`, `% ${bb}`],
+        (r) => [fmt.count(r.ll_leads), fmt.count(r.bb_leads), fmt.percent(r.bb_share)])}
+      <div class="toolbar"><button class="btn small" id="exportPhil">Download Phil's view (CSV)</button></div>
+    </section>`;
+  }
+
+  function exportPhil() {
+    const { from, channel: to } = CONFIG.headline;
+    const q = (v) => { const s = String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const cols = [
+      ["Month", (r) => r.label], ["Part month", (r) => (r.isPart ? "Yes" : "No")],
+      [`${from} leads`, (r) => r.ll_leads], [`${from} revenue`, (r) => r.ll_revenue.toFixed(2)],
+      [`${from} to ${to} leads`, (r) => r.bb_leads], [`${from} to ${to} revenue`, (r) => r.bb_revenue.toFixed(2)],
+      ["Total leads", (r) => r.total_leads], ["Total revenue", (r) => r.total_revenue.toFixed(2)],
+      ["Apples for apples RPE", (r) => (r.total_rpe === null ? "" : r.total_rpe.toFixed(2))],
+      [`Total revenue / ${from} leads`, (r) => (r.ll_rpe === null ? "" : r.ll_rpe.toFixed(2))],
+      [`% ${to}`, (r) => (r.bb_share === null ? "" : (r.bb_share * 100).toFixed(1))],
+    ];
+    const lines = [cols.map(([h]) => q(h)).join(",")];
+    for (const r of lastRender.phil) lines.push(cols.map(([, get]) => q(get(r))).join(","));
+    const filters = describeFilters();
+    if (filters) lines.push("", q(`Filtered: ${filters}`));
+    download(lines.join("\n"), "phils-view.csv");
+  }
+
   function exportBridge() {
     const { bridge, start, end, gran } = lastRender;
     const ch = state.bridgeChannel;
@@ -1688,6 +1764,7 @@ if (typeof module !== "undefined") module.exports = Engine;
       <h2 class="headline-title">Headline</h2>
       ${routedPanel(leads, state.followOns ? m.leadsWithFollowOns : m.leads)}
       ${bridgePanel(leads)}
+      ${philsPanel(leads)}
       <h2 class="headline-title">By channel</h2>
       <details class="panel"><summary>What these figures mean</summary><div class="body"><dl class="defs">${
         DEFINITIONS.map(([t, d]) => `<dt>${t}</dt><dd>${d}</dd>`).join("")}</dl></div></details>
@@ -1705,6 +1782,7 @@ if (typeof module !== "undefined") module.exports = Engine;
     $("#routeSelect")?.addEventListener("change", (e) => { state.route = e.target.value; renderMain(); });
     $("#bridgeChannel").addEventListener("change", (e) => { state.bridgeChannel = e.target.value; renderMain(); });
     $("#exportBridge").addEventListener("click", exportBridge);
+    $("#exportPhil").addEventListener("click", exportPhil);
     if (channels.length) {
       $("#exportBtn").addEventListener("click", exportCsv);
       drawCharts();

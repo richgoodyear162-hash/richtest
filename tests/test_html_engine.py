@@ -114,6 +114,7 @@ def test_html_engine_matches_python(tmp_path):
             else:
                 assert got["summary"][key] == pytest.approx(value), (case, key)
         check_routes(leads, s, e, got["routes"])
+        check_phil(leads, s, e, got["phil"])
         check_bridge(leads, case, s, e, got["bridge"], want)
         assert got["bridgeRowsRevenue"] == pytest.approx(want["blended_revenue"])
         table = breakdown(leads, starts, case["channel"], s, e, case["gran"], ok)
@@ -176,3 +177,24 @@ def check_bridge(leads, case, start, end, got, summary):
     # The steps add up: reported - routed in = own; own + out = blended.
     assert got["reported_revenue"] - got["routed_in_revenue"] == pytest.approx(got["own_revenue"])
     assert got["own_revenue"] + got["out_revenue"] == pytest.approx(got["blended_revenue"])
+
+
+def check_phil(leads, start, end, rows):
+    """Phil's view, worked out independently with pandas."""
+    period = in_range(leads, start, end)
+    ll = period[(period["started_in"] == "Leased Lines") & ~period["is_addon"]]
+    ll = ll.assign(month=ll["date"].dt.strftime("%Y-%m"))
+    months = pd.period_range(start, end, freq="M").strftime("%Y-%m").tolist()
+    assert len(rows) == len(months)
+    for month, got in zip(months, rows):
+        m = ll[ll["month"] == month]
+        kept, routed = m[m["landed"] == "Leased Lines"], m[m["landed"] == "Broadband"]
+        assert got["ll_leads"] == len(kept)
+        assert got["bb_leads"] == len(routed)
+        total = kept["commission"].sum() + routed["commission"].sum()
+        assert got["total_revenue"] == pytest.approx(total)
+        if len(kept) + len(routed):
+            assert got["total_rpe"] == pytest.approx(total / (len(kept) + len(routed)))
+            assert got["bb_share"] == pytest.approx(len(routed) / (len(kept) + len(routed)))
+        if len(kept):
+            assert got["ll_rpe"] == pytest.approx(total / len(kept))

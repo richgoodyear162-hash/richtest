@@ -23,7 +23,7 @@ pass.
 
 ## Headline
 
-The top of the page has two parts. Both follow the date range and filters.
+The top of the page has three parts. Both follow the date range and filters.
 
 1. **Routes**: pick a route from the dropdown (it only lists routes found in
    the data, Leased Lines to Broadband first). One sentence says how many
@@ -35,6 +35,13 @@ The top of the page has two parts. Both follow the date range and filters.
    broadband-mobile, plus the energy cross sells from its customers, ending at
    Broadband blended (the real figure). Each step shows its effect on RPE, and
    there's a table by period you can download.
+
+3. **Phil's view**: the same three monthly tables as Phil's sheet, for every
+   month in the data (filters apply, the date range doesn't). Apples for apples
+   is (LL + LL2BB revenue) ÷ (LL + LL2BB leads). Actual RPE we have to play with
+   is that same revenue ÷ LL leads, as in the sheet. % split BB is LL2BB ÷
+   (LL + LL2BB). Cross sells are left out. Use the Valid lead filter to compare
+   with net figures.
 
 Change the defaults under `headline` in the EDIT HERE section, and the friendly
 form type names under `formTypeLabels`.
